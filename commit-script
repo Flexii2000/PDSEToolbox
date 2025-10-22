@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ------------- helpers -------------
+say()   { printf "%s\n" "$*"; }
+warn()  { printf "Warning: %s\n" "$*" >&2; }
+error() { printf "Error: %s\n" "$*" >&2; }
+
+# Maven wrapper (fallback to mvn if wrapper not present)
+MVN="./mvnw"
+[ -x "$MVN" ] || MVN="mvn"
+MAVEN_OPTS="-B -ntp"
+
+# Allowed commit types (Conventional Commits)
+TYPES=("feat" "fix" "chore" "docs" "refactor" "test" "style" "perf" "build" "ci" "revert")
+
+is_valid_type() {
+  local t="$1"
+  for x in "${TYPES[@]}"; do
+    [[ "$t" == "$x" ]] && return 0
+  done
+  return 1
+}
+
+# Pair initials → full name (case-insensitive)
+pair_fullname() {
+  case "$(echo "$1" | tr '[:upper:]' '[:lower:]')" in
+    fh) echo "Felix Herrmann" ;;
+    mk) echo "Marco Keilwagen" ;;
+    es) echo "Elona Stein" ;;
+    ca) echo "Constantin Asschenfeldt" ;;
+    *)  echo "" ;; # unknown → empty string
+  esac
+}
+
+# ------------- 1) show status & add -------------
+say "Current git status:"
+git status -s || true
+echo
+
+read -r -p "Add files? [a]ll / [p]atch / [n]one (default: a): " addmode
+addmode=${addmode:-a}
+
+case "$addmode" in
+  a|A) git add . ;;
+  p|P) git add -p ;;
+  n|N) : ;;
+  *)   warn "Unknown choice, using 'all'"; git add . ;;
+esac
+
+if git diff --cached --quiet; then
+  warn "No staged changes."
+  read -r -p "Continue anyway? [y/N]: " cont
+  [[ "${cont:-n}" =~ ^[Yy]$ ]] || exit 1
+fi
+
+# ------------- 2) collect metadata -------------
+# commit type
+while true; do
+  say "Commit type (one of: ${TYPES[*]}):"
+  read -r -p "type: " TYPE
+  TYPE=${TYPE:-}
+  if is_valid_type "$TYPE"; then
+    break
+  else
+    error "Invalid type."
+  fi
+done
+
+# pair initials (optional)
+read -r -p "Pair initials (fh/mk/es/ca) — leave empty to skip: " PAIR
+PAIR=${PAIR:-}
+PAIR_NAME="$(pair_fullname "$PAIR")"
+
+# subject
+while true; do
+  read -r -p "Short commit message (subject, <=72 chars): " SUBJECT
+  SUBJECT=${SUBJECT:-}
+  if [[ -n "${SUBJECT// }" ]]; then
+    break
+  else
+    error "Subject must not be empty."
+  fi
+done
+
+# optional body (multi-line; blank line to finish)
+echo "Optional body (press Enter on an empty line to finish):"
+BODY=""
+while IFS= read -r line; do
+  [[ -z "$line" ]] && break
+  BODY+="$line"$'\n'
+done
+
+# Build final message
+HEADER="${TYPE}: ${SUBJECT}"
+MSG="$HEADER"
+if [[ -n "${BODY// }" ]]; then
+  MSG="$MSG"$'\n\n'"$BODY"
+fi
+# append co-author footer if pair is recognized
+if [[ -n "$PAIR_NAME" ]]; then
+  MSG="$MSG"$'\n\n'"Co-authored-by: $PAIR_NAME"
+elif [[ -n "${PAIR// }" ]]; then
+  warn "Unknown pair initials '$PAIR' — skipping co-author."
+fi
+
+# ------------- 3) run tests -------------
+say "Running tests: $MVN $MAVEN_OPTS test"
+if ! $MVN $MAVEN_OPTS test; then
+  error "Tests failed — aborting commit."
+  exit 1
+fi
+say "Tests passed."
+
+# ------------- 4) commit -------------
+say "Commit message preview:"
+echo "----------------------------------------"
+echo "$MSG"
+echo "----------------------------------------"
+read -r -p "Create commit now? [Y/n]: " go
+if [[ ! "${go:-y}" =~ ^[Yy]$ ]]; then
+  say "Aborted."
+  exit 0
+fi
+
+# Use -m for header and optional -m for body/footer (keeps paragraphs)
+# Split MSG into header and rest to preserve formatting reliably
+HEADER_LINE="$HEADER"
+REMAINDER="$(printf "%s" "${MSG#"$HEADER_LINE"}" | sed '1{/^[[:space:]]*$/d;}')"
+if [[ -n "${REMAINDER// }" ]]; then
+  git commit -m "$HEADER_LINE" -m "$REMAINDER"
+else
+  git commit -m "$HEADER_LINE"
+fi
+
+say "Commit created. Use 'git push' to publish."
+
