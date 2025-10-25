@@ -6,6 +6,9 @@ say()   { printf "%s\n" "$*"; }
 warn()  { printf "Warning: %s\n" "$*" >&2; }
 error() { printf "Error: %s\n" "$*" >&2; }
 
+# Allow manual override: COMMIT_SKIP_TESTS=1 ./commit
+SKIP_TESTS=${COMMIT_SKIP_TESTS:-0}
+
 # Maven wrapper (fallback to mvn if wrapper not present)
 MVN="./mvnw"
 [ -x "$MVN" ] || MVN="mvn"
@@ -105,12 +108,17 @@ elif [[ -n "${PAIR// }" ]]; then
 fi
 
 # ------------- 3) run tests -------------
-say "Running tests: $MVN $MAVEN_OPTS test"
-if ! $MVN $MAVEN_OPTS test; then
-  error "Tests failed — aborting commit."
-  exit 1
+if [[ "$TYPE" == "test" || "$SKIP_TESTS" == "1" ]]; then
+  warn "Skipping local tests (reason: TYPE='${TYPE}' or COMMIT_SKIP_TESTS=${SKIP_TESTS})."
+else
+  say "Running tests: $MVN $MAVEN_OPTS test"
+  if ! $MVN $MAVEN_OPTS test; then
+    error "Tests failed — aborting commit."
+    exit 1
+  fi
+  say "Tests passed."
 fi
-say "Tests passed."
+
 
 # ------------- 4) commit -------------
 say "Commit message preview:"
